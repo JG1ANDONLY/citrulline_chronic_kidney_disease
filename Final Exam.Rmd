@@ -1,0 +1,429 @@
+---
+title: "Final Exam"
+author: "Zhongyi (James) Guo (zg268)"
+date: "5/21/2022"
+output: html_document
+---
+
+# Library Import
+
+```{r libraries, echo=FALSE}
+libs = c('tidyverse', 'data.table', 'MASS', 'ggthemes')
+suppressMessages(
+  suppressWarnings(sapply(libs, require, character.only = TRUE))
+)
+rm(libs)
+theme_set(theme_few(14))
+```
+
+# Question 1
+
+```{r}
+# 1a Import the Citrulline Level phenotypes.
+pheno_citrulline <- read.csv("2022QG_citrulline.csv", header = FALSE)
+
+# 1b Plot a histogram of the Citrulline Level phenotypes.
+hist(pheno_citrulline$V1, main="Histogram of Citrulline Level phenotypes (1b)",
+     xlab = "Citrulline Level")
+```
+
+```{r}
+# 1c Import the Kidney Disease phenotypes.
+pheno_kidney <- read.csv("2022QG_kidneydisease.csv", header = FALSE)
+
+# 1d Plot a histogram of the Kideny Disease phenotypes.
+hist(pheno_kidney$V1, main = "Histogram of Kidney Disease phenotypes (1d)",
+     xlab = "Kidney Disease phenotypes")
+```
+
+```{r}
+# 1e Report the sample size n.
+n <- length(pheno_citrulline$V1)
+print(paste("n =", n))
+```
+
+1E: The sample size n is `r n`.
+
+# Question 2
+
+```{r}
+# 2a Import the genotype data.
+geno <- read.csv("2022QG_genotypes.csv", header = FALSE)
+```
+
+```{r}
+# 2b Report the number of SNPs N.
+N <- ncol(geno)
+print(paste("N =", N))
+```
+
+2B: The number of SNPs N is `r N`.
+
+```{r}
+# 2c Calculate the MAF for each SNP.
+maf_matrix <- matrix(NA, nrow = 1, ncol = ncol(geno))
+for (j in 1:ncol(geno)) {
+  genotype <- geno[, j]
+  num_zero <- 0
+  num_one <- 0
+  num_two <- 0
+  for (i in 1:length(genotype)) {
+    if (genotype[i] == 0) {
+      num_zero <- num_zero + 1
+    } else if (genotype[i] == 1) {
+      num_one <- num_one + 1
+    } else {
+      num_two <- num_two + 1
+    }
+  }
+  minor <- min(num_zero, num_two)
+  maf_matrix[1, j] <- (minor * 2 + num_one) / ((num_zero + num_one + num_two) * 2)
+}
+```
+
+```{r}
+#2d Plot a histogram of the N MAFs you calculated.
+hist(maf_matrix, main = "Histogram of MAF (2d)", xlab = "Minor Allele Frequency (MAF)")
+```
+
+# Question 3
+
+```{r}
+# 3a Use the Citrulline Level with linear regression model with NO covariates.
+xa_matrix <- geno - 1
+xd_matrix <- 1 - 2 * abs(xa_matrix)
+
+lm_no_cov <- function(xa_input, xd_input, pheno_input){
+  xa_input = as.numeric(xa_input)
+  xd_input = as.numeric(xd_input)
+  pheno_input = as.numeric(pheno_input)
+  n_samples <- length(xa_input)
+  X_mx <- cbind(1, xa_input, xd_input)
+  MLE_beta <- ginv(t(X_mx) %*% X_mx) %*% t(X_mx) %*% pheno_input
+  y_hat <- X_mx %*% MLE_beta
+  SSM <- sum((y_hat - mean(pheno_input))^2)
+  SSE <- sum((pheno_input - y_hat)^2)
+  df_M <- ncol(X_mx) - 1
+  df_E <- n_samples - ncol(X_mx)
+  MSM <- SSM / df_M
+  MSE <- SSE / df_E
+  Fstatistic <- MSM / MSE
+  pval <- pf(Fstatistic, df_M, df_E, lower.tail = FALSE)
+  return(data.table(f_statistic = Fstatistic, 
+                    p = pval, 
+                    model = 'No Covariate'))
+}
+
+citrulline_results_no_cov <- lapply(1:ncol(xa_matrix), function(column.counter){
+  lm_no_cov(xa_input = xa_matrix[, column.counter],
+            xd_input = xd_matrix[, column.counter],
+            pheno_input = pheno_citrulline$V1)
+}) %>% rbindlist() %>% mutate(index = 1:ncol(xa_matrix))
+```
+
+```{r}
+#3b Produce a Manhattan plot for these p-values.
+make_manhattan = function(res, plt.title){
+  ggplot(res, aes(x = index, y = -log10(p))) + 
+    geom_point() +
+    labs(x = 'Chromosome Index', y = '-log10 p value', title = plt.title)
+}
+
+make_manhattan(res = citrulline_results_no_cov, 
+               plt.title = "Manhattan plot of Citrulline Level phenotype (No covariates) (3b)")
+```
+
+```{r}
+# 3c Produce a QQ plot for these p-values
+make_qqplot = function(pvals, plt.title){
+  observed_pvals = sort(pvals)
+  expected_pvals = qunif(seq(0, 1, length.out = length(observed_pvals) + 2), min = 0, max = 1)
+  expected_pvals = expected_pvals[expected_pvals != 0 & expected_pvals != 1]
+  p_df = data.frame(observed = -log10(observed_pvals),
+                    expected = -log10(expected_pvals))
+  ggplot(p_df, aes(x = expected, y = observed)) +
+    geom_point() +
+    geom_abline(intercept = 0, slope = 1, color = 'red') +
+    labs(x = '-log10 Expected p-val',
+         y = '-log10 Observed p-val',
+         title = plt.title)
+}
+
+make_qqplot(pvals = citrulline_results_no_cov$p,
+            plt.title = 'QQ Plot of Citrulline Level phenotype (No covariates) (3c)')
+```
+
+# Question 4
+
+```{r}
+# 4a Use the Kidney Disease phenotype for logistic regression model w/ covariates
+W_calc <- function(gamma_inv){
+		W <- diag(as.vector(gamma_inv * (1- gamma_inv)))
+    return(W)
+}
+
+beta_update <- function(X_mx, W, Y, gamma_inv, beta){
+  beta_up <- beta + ginv(t(X_mx)%*%W%*%X_mx)%*%t(X_mx)%*%(Y - gamma_inv)
+	return(beta_up)
+}
+
+gamma_inv_calc <- function(X_mx, beta_t){
+    K <- X_mx %*% beta_t
+    gamma_inv <- exp(K)/(1+exp(K))
+    return(gamma_inv)
+}
+
+dev_calc <- function(Y, gamma_inv){
+    deviance <- 2*(sum(Y[Y==1]*log(Y[Y==1]/gamma_inv[Y==1])) + sum((1-Y[Y==0])*log((1-Y[Y==0])/(1-gamma_inv[Y==0]))) )
+    return(deviance)
+}
+
+loglik_calc <- function(Y, gamma_inv){
+    loglik <- sum(Y*log(gamma_inv)+(1-Y)*log(1-gamma_inv))
+    return(loglik)
+}
+
+logistic.IRLS<- function(X_mx,Y =Y, beta.initial.vec = c(0,0,0),
+                         d.stop.th = 1e-6, it.max = 100) {
+	beta_t <- beta.initial.vec
+	dt <- 0
+  gamma_inv <- gamma_inv_calc(X_mx, beta_t)
+	for(i in 1:it.max) {
+		dpt1 <- dt
+		W <- W_calc(gamma_inv)
+		beta_t <- beta_update(X_mx, W, Y, gamma_inv, beta_t)
+		gamma_inv <- gamma_inv_calc(X_mx, beta_t)
+		dt <- dev_calc(Y, gamma_inv)
+		absD <- abs(dt - dpt1)
+		if(absD < d.stop.th) {
+			logl <- loglik_calc(Y, gamma_inv)
+			return(list(beta_t,logl))
+		}
+	}
+	return(list(beta_t= c(NA,NA,NA),logl=NA))
+}
+
+logistic.IRLS.pval <- function(Xa, Xd, Y, beta.initial.vec = c(0,0,0),
+                                d.stop.th = 1e-6, it.max = 100) {
+  beta_t <- beta.initial.vec
+	dt <- 0
+  X_mx <- cbind(rep(1,nrow(Y)), Xa, Xd)
+  gamma_inv <- gamma_inv_calc(X_mx, beta_t)
+	h1 <- logistic.IRLS(X_mx, Y=Y, beta.initial.vec = c(0,0,0),
+	                     d.stop.th = 1e-6, it.max = 100)
+	X_mx <- cbind(rep(1,nrow(Y)), rep(0,nrow(Y)), rep(0,nrow(Y)))
+  gamma_inv <- gamma_inv_calc(X_mx, beta_t)
+	h0 <- logistic.IRLS(X_mx, Y=Y, beta_t, d.stop.th = 1e-6, it.max = 100)
+	LRT <- 2*h1[[2]]-2*h0[[2]]
+  pval <- pchisq(LRT, 2, lower.tail = F)
+	return(data.table(LRT = LRT, p = pval, model = 'No Covariate'))
+}
+
+kidney_results_no_cov <- lapply(1:ncol(xa_matrix), function(column.counter){
+  logistic.IRLS.pval(Xa = xa_matrix[, column.counter],
+                     Xd = xd_matrix[, column.counter],
+                     Y = as.matrix(pheno_kidney))
+}) %>% rbindlist() %>% mutate(index = 1:ncol(xa_matrix))
+```
+
+```{r}
+# 4b
+make_manhattan(res = kidney_results_no_cov,
+               plt.title = "Manhattan plot of Kidney Disease (No covariate) (4b)")
+
+# 4c
+make_qqplot(pvals = kidney_results_no_cov$p,
+            plt.title = "QQ Plot of Kidney Disease (No covariate) (4c)")
+```
+
+# Question 5
+
+The analyses **DID NOT** result in appropriate models, because according to both QQ plots in 3c and 4c, black lines seem to be linear, which means we observe a uniform distribution of p-values (after they were -log transformed). We do not have enough information to detect causal polymorphism positions, and we need to add covariates.
+
+# Question 6
+
+```{r}
+# 6a Perform a PCA on all N genotypes 
+geno_pca <- prcomp(geno)
+
+# 6b Create a plot that projects the n samples onto PC1 and PC2 
+plot(geno_pca$x[, 1], geno_pca$x[, 2], main = "Genotype PC projections", xlab = "PC1", ylab = "PC2")
+```
+
+# Question 7
+
+```{r}
+# 7a apply linear regression model WITH THE FIRST TWO PCs
+X_1 = geno_pca$x[, 1]
+X_2 = geno_pca$x[, 2]
+
+lm_with_cov = function(pheno_input, xa_input, xd_input, xz_input, xy_input){
+  xa_input = as.numeric(xa_input)
+  xd_input = as.numeric(xd_input)
+  xz_input = as.numeric(xz_input)
+  xy_input = as.numeric(xy_input)
+  pheno_input = as.numeric(pheno_input)
+  n_samples = length(xa_input)
+  x_h1 = cbind(1 ,xa_input, xd_input, xz_input, xy_input)
+  MLE_h1 = ginv(t(x_h1) %*% x_h1) %*% t(x_h1) %*% pheno_input
+  x_h0 = cbind(1, xz_input, xy_input)
+  MLE_h0 = ginv(t(x_h0) %*% x_h0) %*% t(x_h0) %*% pheno_input
+  y_hat_0 = x_h0 %*% MLE_h0
+  y_hat_1 = x_h1 %*% MLE_h1
+  SSE_theta_0 = sum((pheno_input - y_hat_0)^2)
+  SSE_theta_1 = sum((pheno_input - y_hat_1)^2)
+  df_M = ncol(x_h1) - ncol(x_h0)
+  df_E = n_samples - ncol(x_h1)
+  numerator = (SSE_theta_0 - SSE_theta_1) / df_M
+  denom = SSE_theta_1 / df_E
+  Fstatistic = numerator / denom
+  pval = pf(Fstatistic, df_M, df_E, lower.tail = FALSE)
+  return(data.table(f_statistic = Fstatistic, p = pval, model = 'Covariate'))
+}
+
+citrulline_results_with_covar = lapply(1:ncol(xa_matrix), function(column.counter){
+  lm_with_cov(pheno_input = pheno_citrulline$V1,
+              xa_input = xa_matrix[, column.counter],
+              xd_input = xd_matrix[, column.counter],
+              xz_input = X_1,
+              xy_input = X_2)
+}) %>% rbindlist() %>% mutate(index = 1:ncol(xa_matrix))
+```
+
+```{r}
+# 7b
+make_manhattan(res = citrulline_results_with_covar, 
+               plt.title = "Manhattan plot of Citrulline Level (With Covariates) (7b)")
+
+# 7c
+make_qqplot(pvals = citrulline_results_with_covar$p,
+            plt.title = "QQ Plot of Citrulline Level (With Covariates) (7c)")
+```
+
+# Question 8
+
+```{r}
+# 8a
+logistic.IRLS.pval.with.cov <- function(Xa, Xd, Xz, Xy, Y, beta.initial.vec = c(0,0,0,0,0),
+                                d.stop.th = 1e-6, it.max = 100) {
+  beta_t <- beta.initial.vec
+	dt <- 0
+  X_mx <- cbind(rep(1,nrow(Y)), Xa, Xd, Xz, Xy)
+  gamma_inv <- gamma_inv_calc(X_mx, beta_t)
+	h1 <- logistic.IRLS(X_mx, Y=Y, beta.initial.vec = c(0,0,0,0,0),
+	                     d.stop.th = 1e-6, it.max = 100)
+	X_mx <- cbind(rep(1,nrow(Y)), rep(0,nrow(Y)), rep(0,nrow(Y)), rep(0, nrow(Y)), rep(0, nrow(Y)))
+  gamma_inv <- gamma_inv_calc(X_mx, beta_t)
+  h0 <- logistic.IRLS(X_mx, Y=Y, beta_t, d.stop.th = 1e-6, it.max = 100)
+	LRT <- 2*h1[[2]]-2*h0[[2]]
+  pval <- pchisq(LRT, 2, lower.tail = F)
+	return(data.table(LRT = LRT, p = pval, model = 'Covariate'))
+}
+
+kidney_results_with_covar = lapply(1:ncol(xa_matrix), function(column.counter){
+  logistic.IRLS.pval.with.cov(Xa = xa_matrix[, column.counter],
+                              Xd = xd_matrix[, column.counter],
+                              Xz = X_1,
+                              Xy = X_2,
+                              Y = as.matrix(pheno_kidney))
+}) %>% rbindlist() %>% mutate(index = 1:ncol(xa_matrix))
+```
+
+```{r}
+# 8b
+make_manhattan(res = kidney_results_with_covar, plt.title = "Manhattan plot of Kidney Disease (With Covariates) (8b)")
+
+# 8c
+make_qqplot(pvals = kidney_results_with_covar$p, plt.title = "QQ Plot of Kidney Disease (With Covariates) (8c)")
+```
+
+# Question 9
+
+The analyses **DID** result in appropriate models, because QQ plots in 7c and 8c are ideal. This happens because most of the p-values observed follow a uniform distribution (i.e. they are not in LD with a causal polymorphism so the null hypothesis is correct!) but the few that are in LD with a causal polymorphism will produce signicant p-values (extremely low = extremely high -log(p-values)) and these are in the \tail".
+
+# Question 10 undone
+
+```{r}
+# 10a
+index <- c()
+for (i in 1:nrow(citrulline_results_with_covar)) {
+  if (-log10(citrulline_results_with_covar[i, "p"]) >= 13) {
+    index <- append(index, as.numeric(citrulline_results_with_covar[i, "index"]))
+  }
+}
+print(index)
+# new_alpha <- 0.05/N
+# if pvalue of 9882 <  bonferroni correction -> reject -> yes
+# if pvalue of 20138 < ...
+```
+
+10A: Number `r index` SNPs have the most significant p-value for EACH peak in 7B.
+
+```{r}
+new_alpha <- 0.05/N
+if (citrulline_results_with_covar[9882, "p"] < new_alpha) {
+  print("9882: Yes")
+} else {
+  print("9882: No")
+}
+
+if (citrulline_results_with_covar[20138, "p"] < new_alpha) {
+  print("20138: Yes")
+} else {
+  print("20138: No")
+}
+
+if (citrulline_results_with_covar[20140, "p"] < new_alpha) {
+  print("20140: Yes")
+} else {
+  print("20140: No")
+}
+```
+
+For SNPs No. [9882, 20138, 20140], we can use Bonferroni correction to reject the null hypothesis. I used the formula $$\alpha = \frac{0.05}{N}$$. For each of the SNP, if its p-value is smaller than the new alpha value, we can reject the null hypothesis.
+
+```{r}
+# 10b
+# [TODO] ####
+index <- c()
+for (i in 1:nrow(kidney_results_with_covar)) {
+  if (-log10(kidney_results_with_covar[i, "p"]) >= 26) {
+    index <- append(index, as.numeric(kidney_results_with_covar[i, "index"]))
+  }
+}
+print(index)
+# which.min(kidney_results_with_covar$p)
+```
+
+10B: `r index` SNPs have the most significant p-value for EACH peak in 8B.
+
+```{r}
+new_alpha <- 0.05/N
+if (kidney_results_with_covar[4210, "p"] < new_alpha) {
+  print("4210: Yes")
+} else {
+  print("4210: No")
+}
+
+if (kidney_results_with_covar[20138, "p"] < new_alpha) {
+  print("20138: Yes")
+} else {
+  print("20138: No")
+}
+
+if (kidney_results_with_covar[20140, "p"] < new_alpha) {
+  print("20140: Yes")
+} else {
+  print("20140: No")
+}
+```
+
+SNPs No. [4210, 20138, 20140], we can use Bonferroni correction to reject the null hypothesis. I used the formula $$\alpha = \frac{0.05}{N}$$. For each of the SNP, if its p-value is smaller than the new alpha value, we can reject the null hypothesis.
+
+10C: Because both 7B and 8B share SNP No. 20138 same, they indicate the positions of the same causal polymorphisms.
+
+10D: Not necessarily. According to linkage disequilibrium, there is a trade-off between resolution and the ability to map causal polymorphisms and that there is a theoretical limit to the resolution of a GWAS experiment. Sometimes p-value at a site can be raised by a nearby site p-value.
+
+
+
+
